@@ -5,8 +5,10 @@
 // =========================
 
 #define PIN_ACCELERATOR 34
-#define PIN_BRAKE 35
-#define PIN_CLUTCH 32
+// Port brake dan clutch ditukar: brake sekarang membaca GPIO32,
+// sedangkan clutch membaca GPIO35. Tidak perlu memindahkan kabel.
+#define PIN_BRAKE 32
+#define PIN_CLUTCH 35
 #define PIN_STEERING 33  // Kaki tengah potensiometer steering
 
 // =========================
@@ -14,7 +16,7 @@
 // =========================
 
 BleGamepad bleGamepad(
-  "v6 Driving",
+  "v9 Driving",
   "ESP32",
   100
 );
@@ -34,15 +36,21 @@ const int ADC_MAX_VALUE = 4095;
 const int ACCELERATOR_MIN = 1700;
 const int ACCELERATOR_MAX = 2350;
 
-const int BRAKE_MIN = 1500;
-const int BRAKE_MAX = 2120;
+// Nilai kalibrasi mengikuti potensiometer pada port yang baru.
+const int BRAKE_MIN = 2000;
+const int BRAKE_MAX = 2700;
 
-const int CLUTCH_MIN = 2000;
-const int CLUTCH_MAX = 2700;
+const int CLUTCH_MIN = 1500;
+const int CLUTCH_MAX = 2120;
 
-// Kalibrasi steering dari pembacaan potensiometer Anda
+// Kalibrasi steering dari pembacaan potensiometer Anda.
+// Steering lurus berada di tengah rentang: (250 + 3600) / 2 = 1925.
 const int STEERING_MIN = 250;
 const int STEERING_MAX = 3600;
+
+// Nilai tengah steering diambil saat ESP32 dinyalakan.
+// Nyalakan board ketika roda berada pada posisi lurus.
+int steeringCenter = 1925;
 
 // =========================
 // ARAH PEDAL
@@ -58,8 +66,13 @@ const bool INVERT_STEERING = false;
 // =========================
 
 const int ADC_SAMPLES = 16;           // Naikkan dari 8 ke 16 untuk smoothing lebih baik
-const int DEAD_ZONE = 25;             // Threshold noise: perubahan <25 unit ADC diabaikan
-const float SMOOTHING_ALPHA = 0.3;    // Exponential smoothing factor (0.1-0.4 recommended)
+const int DEAD_ZONE = 25;             // Threshold noise pedal: perubahan <25 unit ADC diabaikan
+const float SMOOTHING_ALPHA = 0.3;    // Smoothing pedal
+
+// Steering membutuhkan gerakan halus. Ambang kecil mencegah nilai lompat,
+// sementara rata-rata 16 sampel di atas sudah cukup meredam noise.
+const int STEERING_DEAD_ZONE = 3;
+const float STEERING_SMOOTHING_ALPHA = 0.65;
 
 // =========================
 // VARIABEL GLOBAL UNTUK SMOOTHING
@@ -95,13 +108,24 @@ int readAnalogAverage(int pin) {
 // =========================
 
 int applySmoothingAndDeadZone(int rawValue, float &smoothedValue, int lastValue) {
-  // Exponential smoothing
+  // Exponential smoothing untuk pedal
   smoothedValue = (SMOOTHING_ALPHA * rawValue) + ((1.0 - SMOOTHING_ALPHA) * smoothedValue);
   int smoothedInt = (int)smoothedValue;
 
-  // Dead zone: kalau perubahan dari lastValue kecil, kembalikan lastValue
   if (abs(smoothedInt - lastValue) < DEAD_ZONE) {
     return lastValue;
+  }
+
+  return smoothedInt;
+}
+
+int applySteeringSmoothing(int rawValue) {
+  smoothedSteering = (STEERING_SMOOTHING_ALPHA * rawValue) +
+                     ((1.0 - STEERING_SMOOTHING_ALPHA) * smoothedSteering);
+  int smoothedInt = (int)smoothedSteering;
+
+  if (abs(smoothedInt - lastSteering) < STEERING_DEAD_ZONE) {
+    return lastSteering;
   }
 
   return smoothedInt;
@@ -141,19 +165,20 @@ int16_t mapPedalToAxis(
 int16_t mapSteeringToAxis(int rawValue) {
   rawValue = constrain(rawValue, STEERING_MIN, STEERING_MAX);
 
-  long axisValue = map(
-    rawValue,
-    STEERING_MIN,
-    STEERING_MAX,
-    -32767,
-    32767
-  );
+  const int AXIS_CENTER = 16383;
+  long axisValue;
 
-  if (INVERT_STEERING) {
-    axisValue = -axisValue;
+  if (rawValue <= steeringCenter) {
+    axisValue = map(rawValue, STEERING_MIN, steeringCenter, 0, AXIS_CENTER);
+  } else {
+    axisValue = map(rawValue, steeringCenter, STEERING_MAX, AXIS_CENTER, 32767);
   }
 
-  return constrain(axisValue, -32767, 32767);
+  if (INVERT_STEERING) {
+    axisValue = 32767 - axisValue;   // bukan -axisValue
+  }
+
+  return constrain(axisValue, 0, 32767);
 }
 
 // =========================
@@ -189,6 +214,13 @@ void setup() {
     ADC_11db
   );
 
+  // Mulai dari posisi steering yang sebenarnya agar tidak bergerak dari nol
+  // saat board baru dinyalakan atau Bluetooth baru tersambung.
+  int initialSteering = readAnalogAverage(PIN_STEERING);
+  steeringCenter = constrain(initialSteering, STEERING_MIN, STEERING_MAX);
+  smoothedSteering = steeringCenter;
+  lastSteering = steeringCenter;
+
   BleGamepadConfiguration bleGamepadConfig;
 
   bleGamepadConfig.setAutoReport(false);
@@ -203,12 +235,13 @@ void setup() {
   bleGamepadConfig.setButtonCount(0);
   bleGamepadConfig.setHatSwitchCount(0);
 
-  // Hanya tiga sumbu untuk kompatibilitas game yang hanya membaca X, Y, Z.
+  // Empat sumbu HID terpisah. Steering adalah sumbu bipolar Z:
+  // kiri = -32767, lurus = 0, kanan = +32767.
   bleGamepadConfig.setWhichAxes(
-    true,  // X: clutch (-) dan brake (+)
+    true,  // X: brake
     true,  // Y: accelerator
     true,  // Z: steering
-    false, // RX
+    true,  // RX: clutch
     false, // RY
     false, // RZ
     false, // Slider 1
@@ -231,13 +264,15 @@ void setup() {
   bleGamepad.sendReport();
 
   Serial.println("BLE Gamepad started");
-  Serial.println("Axis X = Clutch (-) / Brake (+)");
+  Serial.println("Axis X = Brake");
   Serial.println("Axis Y = Accelerator");
-  Serial.println("Axis Z = Steering");
+  Serial.println("Axis Z = Steering (- left, 0 center, + right)");
+  Serial.println("Axis RX = Clutch");
   Serial.println();
   Serial.println("Steering calibration: " + String(STEERING_MIN) + " to " + String(STEERING_MAX));
-  Serial.println("Dead zone: " + String(DEAD_ZONE) + " ADC units");
-  Serial.println("Smoothing alpha: " + String(SMOOTHING_ALPHA));
+  Serial.println("Steering center at startup: " + String(steeringCenter));
+  Serial.println("Steering dead zone: " + String(STEERING_DEAD_ZONE) + " ADC units");
+  Serial.println("Steering smoothing alpha: " + String(STEERING_SMOOTHING_ALPHA));
   Serial.println("ADC samples: " + String(ADC_SAMPLES));
 }
 
@@ -261,7 +296,7 @@ void loop() {
   int filteredAcc = applySmoothingAndDeadZone(rawAcc, smoothedAcc, lastAcc);
   int filteredBrake = applySmoothingAndDeadZone(rawBrake, smoothedBrake, lastBrake);
   int filteredClutch = applySmoothingAndDeadZone(rawClutch, smoothedClutch, lastClutch);
-  int filteredSteering = applySmoothingAndDeadZone(rawSteering, smoothedSteering, lastSteering);
+  int filteredSteering = applySteeringSmoothing(rawSteering);
 
   // Update last values hanya kalau berubah
   bool changed = false;
@@ -288,15 +323,13 @@ void loop() {
   int16_t clutchAxis = mapPedalToAxis(filteredClutch, CLUTCH_MIN, CLUTCH_MAX, INVERT_CLUTCH);
   int16_t steeringAxis = mapSteeringToAxis(filteredSteering);
 
-  // X memakai titik tengah sebagai netral: clutch bergerak ke negatif,
-  // brake bergerak ke positif. Jika keduanya diinjak bersamaan, nilainya saling mengurangi.
-  int16_t combinedPedalAxis = constrain((int32_t)brakeAxis - (int32_t)clutchAxis, -32767, 32767);
-
-  // Kirim report hanya kalau ada perubahan signifikan
+  // Kirim report hanya kalau ada perubahan. Brake dan clutch adalah
+  // sumbu independen; keduanya tidak lagi digabung.
   if (changed) {
-    bleGamepad.setX(combinedPedalAxis);
+    bleGamepad.setX(brakeAxis);
     bleGamepad.setY(acceleratorAxis);
     bleGamepad.setZ(steeringAxis);
+    bleGamepad.setRX(clutchAxis);
     bleGamepad.sendReport();
   }
 
@@ -317,11 +350,9 @@ void loop() {
   Serial.print(rawClutch);
   Serial.print(" -> ");
   Serial.print(filteredClutch);
-  Serial.print(" (");
+  Serial.print(") | RX CLUTCH: ");
   Serial.print(clutchAxis);
-  Serial.print(") | X COMBINED: ");
-  Serial.print(combinedPedalAxis);
-  Serial.print(" | STEERING: ");
+  Serial.print(" | STEERING Z: ");
   Serial.print(rawSteering);
   Serial.print(" -> ");
   Serial.print(filteredSteering);
