@@ -14,7 +14,7 @@
 // =========================
 
 BleGamepad bleGamepad(
-  "v5 Driving",
+  "v6 Driving",
   "ESP32",
   100
 );
@@ -197,16 +197,20 @@ void setup() {
     CONTROLLER_TYPE_GAMEPAD
   );
 
+  // macOS/browser Gamepad API lebih konsisten mengenali gamepad
+  // yang memiliki minimal satu tombol pada HID descriptor.
+  // Tombol ini hanya melengkapi identitas gamepad; belum ada tombol fisik.
   bleGamepadConfig.setButtonCount(0);
   bleGamepadConfig.setHatSwitchCount(0);
 
+  // Hanya tiga sumbu untuk kompatibilitas game yang hanya membaca X, Y, Z.
   bleGamepadConfig.setWhichAxes(
-    true, // X
-    true, // Y
-    true,  // Z
-    true,  // RX (steering)
-    false,  // RY
-    false,  // RZ
+    true,  // X: clutch (-) dan brake (+)
+    true,  // Y: accelerator
+    true,  // Z: steering
+    false, // RX
+    false, // RY
+    false, // RZ
     false, // Slider 1
     false  // Slider 2
   );
@@ -227,10 +231,9 @@ void setup() {
   bleGamepad.sendReport();
 
   Serial.println("BLE Gamepad started");
-  Serial.println("Axis 0 / Z = Accelerator");
-  Serial.println("Axis 1 / RZ = Brake");
-  Serial.println("Axis 2 / Z = Clutch");
-  Serial.println("Axis RX = Steering");
+  Serial.println("Axis X = Clutch (-) / Brake (+)");
+  Serial.println("Axis Y = Accelerator");
+  Serial.println("Axis Z = Steering");
   Serial.println();
   Serial.println("Steering calibration: " + String(STEERING_MIN) + " to " + String(STEERING_MAX));
   Serial.println("Dead zone: " + String(DEAD_ZONE) + " ADC units");
@@ -285,12 +288,15 @@ void loop() {
   int16_t clutchAxis = mapPedalToAxis(filteredClutch, CLUTCH_MIN, CLUTCH_MAX, INVERT_CLUTCH);
   int16_t steeringAxis = mapSteeringToAxis(filteredSteering);
 
+  // X memakai titik tengah sebagai netral: clutch bergerak ke negatif,
+  // brake bergerak ke positif. Jika keduanya diinjak bersamaan, nilainya saling mengurangi.
+  int16_t combinedPedalAxis = constrain((int32_t)brakeAxis - (int32_t)clutchAxis, -32767, 32767);
+
   // Kirim report hanya kalau ada perubahan signifikan
   if (changed) {
-    bleGamepad.setX(acceleratorAxis);
-    bleGamepad.setY(brakeAxis);
-    bleGamepad.setZ(clutchAxis);
-    bleGamepad.setRX(steeringAxis);
+    bleGamepad.setX(combinedPedalAxis);
+    bleGamepad.setY(acceleratorAxis);
+    bleGamepad.setZ(steeringAxis);
     bleGamepad.sendReport();
   }
 
@@ -313,7 +319,9 @@ void loop() {
   Serial.print(filteredClutch);
   Serial.print(" (");
   Serial.print(clutchAxis);
-  Serial.print(") | STEERING: ");
+  Serial.print(") | X COMBINED: ");
+  Serial.print(combinedPedalAxis);
+  Serial.print(" | STEERING: ");
   Serial.print(rawSteering);
   Serial.print(" -> ");
   Serial.print(filteredSteering);
