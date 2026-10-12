@@ -65,7 +65,7 @@ const bool INVERT_STEERING = false;
 // FILTER ADC & DEAD ZONE
 // =========================
 
-const int ADC_SAMPLES = 16;           // Naikkan dari 8 ke 16 untuk smoothing lebih baik
+const int ADC_SAMPLES = 4;           // Percepat pembacaan ADC
 const int DEAD_ZONE = 25;             // Threshold noise pedal: perubahan <25 unit ADC diabaikan
 const float SMOOTHING_ALPHA = 0.3;    // Smoothing pedal
 
@@ -92,15 +92,12 @@ int lastSteering = 0;
 // BACA ADC RATA-RATA
 // =========================
 
-int readAnalogAverage(int pin) {
+int readAnalogAverage(int pin, int samples = ADC_SAMPLES) {
   long total = 0;
-
-  for (int i = 0; i < ADC_SAMPLES; i++) {
+  for (int i = 0; i < samples; i++) {
     total += analogRead(pin);
-    delayMicroseconds(500);
   }
-
-  return total / ADC_SAMPLES;
+  return total / samples;
 }
 
 // =========================
@@ -120,14 +117,15 @@ int applySmoothingAndDeadZone(int rawValue, float &smoothedValue, int lastValue)
 }
 
 int applySteeringSmoothing(int rawValue) {
-  smoothedSteering = (STEERING_SMOOTHING_ALPHA * rawValue) +
-                     ((1.0 - STEERING_SMOOTHING_ALPHA) * smoothedSteering);
+  float diff = abs(rawValue - smoothedSteering);
+  float alpha = (diff > 150) ? 0.95 : STEERING_SMOOTHING_ALPHA;
+
+  smoothedSteering = alpha * rawValue + (1.0 - alpha) * smoothedSteering;
   int smoothedInt = (int)smoothedSteering;
 
   if (abs(smoothedInt - lastSteering) < STEERING_DEAD_ZONE) {
     return lastSteering;
   }
-
   return smoothedInt;
 }
 
@@ -333,32 +331,36 @@ void loop() {
     bleGamepad.sendReport();
   }
 
-  // Debug Serial Monitor
-  Serial.print("ACC: ");
-  Serial.print(rawAcc);
-  Serial.print(" -> ");
-  Serial.print(filteredAcc);
-  Serial.print(" (");
-  Serial.print(acceleratorAxis);
-  Serial.print(") | BRAKE: ");
-  Serial.print(rawBrake);
-  Serial.print(" -> ");
-  Serial.print(filteredBrake);
-  Serial.print(" (");
-  Serial.print(brakeAxis);
-  Serial.print(") | CLUTCH: ");
-  Serial.print(rawClutch);
-  Serial.print(" -> ");
-  Serial.print(filteredClutch);
-  Serial.print(") | RX CLUTCH: ");
-  Serial.print(clutchAxis);
-  Serial.print(" | STEERING Z: ");
-  Serial.print(rawSteering);
-  Serial.print(" -> ");
-  Serial.print(filteredSteering);
-  Serial.print(" (");
-  Serial.print(steeringAxis);
-  Serial.println(")");
+ static unsigned long lastPrint = 0;
+  if (millis() - lastPrint >= 200) {
+    lastPrint = millis();
+
+    Serial.print("ACC: ");
+    Serial.print(rawAcc);
+    Serial.print(" -> ");
+    Serial.print(filteredAcc);
+    Serial.print(" (");
+    Serial.print(acceleratorAxis);
+    Serial.print(") | BRAKE: ");
+    Serial.print(rawBrake);
+    Serial.print(" -> ");
+    Serial.print(filteredBrake);
+    Serial.print(" (");
+    Serial.print(brakeAxis);
+    Serial.print(") | CLUTCH: ");
+    Serial.print(rawClutch);
+    Serial.print(" -> ");
+    Serial.print(filteredClutch);
+    Serial.print(" (");
+    Serial.print(clutchAxis);
+    Serial.print(") | STEERING Z: ");
+    Serial.print(rawSteering);
+    Serial.print(" -> ");
+    Serial.print(filteredSteering);
+    Serial.print(" (");
+    Serial.print(steeringAxis);
+    Serial.println(")");
+  }
 
   delay(10);
 }
