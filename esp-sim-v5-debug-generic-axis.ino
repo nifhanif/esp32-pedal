@@ -92,15 +92,12 @@ int lastSteering = 0;
 // BACA ADC RATA-RATA
 // =========================
 
-int readAnalogAverage(int pin) {
+int readAnalogAverage(int pin, int samples = ADC_SAMPLES) {
   long total = 0;
-
-  for (int i = 0; i < ADC_SAMPLES; i++) {
+  for (int i = 0; i < samples; i++) {
     total += analogRead(pin);
-    delayMicroseconds(500);
   }
-
-  return total / ADC_SAMPLES;
+  return total / samples;
 }
 
 // =========================
