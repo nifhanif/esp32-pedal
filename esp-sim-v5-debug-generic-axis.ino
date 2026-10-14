@@ -16,7 +16,7 @@
 // =========================
 
 BleGamepad bleGamepad(
-  "v9 Driving",
+  "v10 Driving",
   "ESP32",
   100
 );
@@ -38,7 +38,7 @@ const int ACCELERATOR_MAX = 2350;
 
 // Nilai kalibrasi mengikuti potensiometer pada port yang baru.
 const int BRAKE_MIN = 2000;
-const int BRAKE_MAX = 2700;
+const int BRAKE_MAX = 2600;
 
 const int CLUTCH_MIN = 1500;
 const int CLUTCH_MAX = 2120;
@@ -65,14 +65,16 @@ const bool INVERT_STEERING = false;
 // FILTER ADC & DEAD ZONE
 // =========================
 
-const int ADC_SAMPLES = 4;           // Percepat pembacaan ADC
+const int ADC_SAMPLES = 8;           // Percepat pembacaan ADC
 const int DEAD_ZONE = 25;             // Threshold noise pedal: perubahan <25 unit ADC diabaikan
 const float SMOOTHING_ALPHA = 0.3;    // Smoothing pedal
 
 // Steering membutuhkan gerakan halus. Ambang kecil mencegah nilai lompat,
 // sementara rata-rata 16 sampel di atas sudah cukup meredam noise.
-const int STEERING_DEAD_ZONE = 3;
-const float STEERING_SMOOTHING_ALPHA = 0.65;
+const int STEERING_DEAD_ZONE = 8;            // naikkan jika masih bergerak sendiri
+const float STEERING_ALPHA_IDLE = 0.15;      // sangat halus saat diam
+const float STEERING_ALPHA_MOVE = 0.85;      // responsif saat diputar
+const int STEERING_MOVE_THRESHOLD = 40;      // selisih ADC yang dianggap "sedang diputar"
 
 // =========================
 // VARIABEL GLOBAL UNTUK SMOOTHING
@@ -118,14 +120,18 @@ int applySmoothingAndDeadZone(int rawValue, float &smoothedValue, int lastValue)
 
 int applySteeringSmoothing(int rawValue) {
   float diff = abs(rawValue - smoothedSteering);
-  float alpha = (diff > 150) ? 0.95 : STEERING_SMOOTHING_ALPHA;
+  bool moving = diff > STEERING_MOVE_THRESHOLD;
 
+  float alpha = moving ? STEERING_ALPHA_MOVE : STEERING_ALPHA_IDLE;
   smoothedSteering = alpha * rawValue + (1.0 - alpha) * smoothedSteering;
   int smoothedInt = (int)smoothedSteering;
 
-  if (abs(smoothedInt - lastSteering) < STEERING_DEAD_ZONE) {
+  // Saat roda diputar cepat, dead zone dilewati agar tidak ada lag.
+  // Saat diam, perubahan kecil akibat noise diabaikan.
+  if (!moving && abs(smoothedInt - lastSteering) < STEERING_DEAD_ZONE) {
     return lastSteering;
   }
+
   return smoothedInt;
 }
 
@@ -270,7 +276,7 @@ void setup() {
   Serial.println("Steering calibration: " + String(STEERING_MIN) + " to " + String(STEERING_MAX));
   Serial.println("Steering center at startup: " + String(steeringCenter));
   Serial.println("Steering dead zone: " + String(STEERING_DEAD_ZONE) + " ADC units");
-  Serial.println("Steering smoothing alpha: " + String(STEERING_SMOOTHING_ALPHA));
+  Serial.println("Steering smoothing alpha idle/move: " + String(STEERING_ALPHA_IDLE) + " / " + String(STEERING_ALPHA_MOVE));
   Serial.println("ADC samples: " + String(ADC_SAMPLES));
 }
 
